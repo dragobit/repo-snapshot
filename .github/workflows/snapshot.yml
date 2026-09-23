@@ -1,0 +1,58 @@
+name: Snapshot a repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: 'URL of the repository to snapshot (e.g. https://github.com/owner/repo)'
+        required: true
+        type: string
+      source_type:
+        description: 'Source type. "auto" detects it from the URL/repository.'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - git
+      ref:
+        description: 'Branch, tag, or commit to snapshot (default: the remote HEAD)'
+        required: false
+        default: ''
+        type: string
+      depth:
+        description: 'Clone depth (1 = latest state only)'
+        required: false
+        default: '1'
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_URL: ${{ inputs.source_url }}
+  SOURCE_TYPE: ${{ inputs.source_type }}
+  SOURCE_REF: ${{ inputs.ref }}
+  SOURCE_DEPTH: ${{ inputs.depth }}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Run snapshot
+        run: ./scripts/snapshot.sh
+
+      - name: Commit and push snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "Snapshot of ${SOURCE_URL}"
+          git push
