@@ -23,6 +23,6 @@ snapshot_type() {
   cp -a "$clone_dir"/. "$SNAPSHOT_WORK_DIR"/
   rm -rf "$clone_dir"
 
-  printf 'SNAPSHOT_REVISION=%s\nSNAPSHOT_TIMESTAMP=%s\n' \
+  printf "SNAPSHOT_REVISION='%s'\nSNAPSHOT_TIMESTAMP='%s'\n" \
     "$revision" "$timestamp" > "$SNAPSHOT_WORK_DIR/.snapshot-meta.env"
 }
