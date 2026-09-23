@@ -4,11 +4,18 @@
 # Required env: SOURCE_URL
 # Optional env: SOURCE_TYPE (auto|git|...), SOURCE_REF, SOURCE_DEPTH
 #
-# To add a new source type, create scripts/snapshot_<type>.sh that defines a
-# `snapshot_type` function which writes the snapshot files into
-# "$SNAPSHOT_WORK_DIR" and writes revision metadata to
-# "$SNAPSHOT_WORK_DIR/.snapshot-meta.env" (see snapshot_git.sh). Then add the
-# type to the workflow's source_type options and to README.md.
+# Source-type plugin contract — to add a new VCS/source:
+#   1. Create scripts/snapshot_<type>.sh defining:
+#      - snapshot_install()  (optional) install the tools this type needs,
+#                            e.g. `sudo apt-get install -y mercurial`.
+#      - snapshot_type()     fetch the source tree into "$SNAPSHOT_WORK_DIR"
+#                            and write "$SNAPSHOT_WORK_DIR/.snapshot-meta.env"
+#                            (SNAPSHOT_REVISION, SNAPSHOT_TIMESTAMP, plus any
+#                            type-specific keys such as SNAPSHOT_TAGS,
+#                            SNAPSHOT_DESCRIBE). See snapshot_git.sh.
+#   2. Add a `case` arm below mapping the type to its file.
+#   3. Extend detect_source_type() so `auto` can route to it.
+#   4. Add the type to the workflow's source_type options and README.md.
 set -euo pipefail
 
 : "${SOURCE_URL:?SOURCE_URL is required}"
@@ -17,10 +24,29 @@ SOURCE_TYPE="${SOURCE_TYPE:-auto}"
 export SNAPSHOT_WORK_DIR
 SNAPSHOT_WORK_DIR="$(mktemp -d)"
 
+# ---------------------------------------------------------------------------
+# Source type detection. Extend this table as new types are implemented.
+# First matching rule wins.
+# ---------------------------------------------------------------------------
+detect_source_type() {
+  local url="$1"
+  case "$url" in
+    # Explicit VCS markers in the URL
+    *hg.mozilla.org*|*hg.sr.ht*|*.hg|*/hg/*) echo hg ;;
+    *svn.apache.org*|*svn.*|*/svn/*) echo svn ;;
+    *.fossil|*chiselapp.com*|*/fossil/*) echo fossil ;;
+    # Plain archives (not yet implemented — placeholder for the contract)
+    *.tar.gz|*.tgz|*.tar.bz2|*.tbz2|*.tar.xz|*.txz|*.zip) echo archive ;;
+    # Known git hosts and git suffix / protocol
+    *.git|git://*|git@*|*github.com*|*gitlab.com*|*bitbucket.org*|*codeberg.org*|*git.sr.ht*|*gitea.*|*git.*/[!/]*) echo git ;;
+    # Fallback: try git, which also covers self-hosted https remotes
+    *) echo git ;;
+  esac
+}
+
 if [ "$SOURCE_TYPE" = "auto" ]; then
-  # Everything reachable is currently treated as git. When other VCS support
-  # lands, detection rules go here.
-  SOURCE_TYPE="git"
+  SOURCE_TYPE="$(detect_source_type "$SOURCE_URL")"
+  echo "Detected source type: ${SOURCE_TYPE}"
 fi
 
 case "$SOURCE_TYPE" in
@@ -34,6 +60,11 @@ case "$SOURCE_TYPE" in
     exit 1
     ;;
 esac
+
+# Install the tools the selected source type needs, if it declares any.
+if declare -F snapshot_install >/dev/null; then
+  snapshot_install
+fi
 
 snapshot_type
 
@@ -55,19 +86,29 @@ RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown/r
 # shellcheck source=/dev/null
 . "$SNAPSHOT_WORK_DIR/.snapshot-meta.env"
 
-cat > README.md <<EOF
+meta_row() {
+  # $1 = label, $2 = value (empty → skip)
+  if [ -n "${2:-}" ]; then printf '| %s | %s |\n' "$1" "$2"; fi
+}
+
+{
+  cat <<EOF
 # ${REPO_NAME}
 
 Snapshot of [\`${SOURCE_URL}\`](${SOURCE_URL}).
 
 | | |
 |---|---|
-| Source | ${SOURCE_URL} |
-| Source type | ${SOURCE_TYPE} |
-| Ref | ${SOURCE_REF:-default branch} |
-| Revision | \`${SNAPSHOT_REVISION:-unknown}\` |
-| Taken at (UTC) | ${SNAPSHOT_TIMESTAMP:-unknown} |
-| Taken by | [workflow run](${RUN_URL}) |
+EOF
+  meta_row "Source" "$SOURCE_URL"
+  meta_row "Source type" "$SOURCE_TYPE"
+  meta_row "Ref" "${SOURCE_REF:-default branch}"
+  meta_row "Revision" "\`${SNAPSHOT_REVISION:-unknown}\`"
+  meta_row "Tags at revision" "${SNAPSHOT_TAGS:-}"
+  meta_row "Nearest ancestor tag" "${SNAPSHOT_DESCRIBE:-}"
+  meta_row "Taken at (UTC)" "${SNAPSHOT_TIMESTAMP:-unknown}"
+  meta_row "Taken by" "[workflow run](${RUN_URL})"
+  cat <<EOF
 
 This repository is a read-only point-in-time copy; upstream history is not
 included (shallow snapshot). The source repository's own \`.github/\` directory
@@ -76,6 +117,7 @@ is excluded so its CI/CD workflows are not imported.
 Re-snapshot: run the **Snapshot a repository** workflow (Actions tab) with a
 new URL/ref.
 EOF
+} > README.md
 
 rm -rf "$SNAPSHOT_WORK_DIR"
 echo "Snapshot written."
